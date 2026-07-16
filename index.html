@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentence-Probability Result Explorer</title>
+<link rel="stylesheet" href="style.css">
+<!--
+  Plotly.js is loaded from a CDN. This requires internet access both locally
+  and when served via GitHub Pages. If you need a fully offline build,
+  download a plotly.min.js build and replace this <script src> with a local
+  copy shipped alongside this file, then update this comment.
+
+  This page loads data via fetch() (manifest.json + on-demand JSON chunks
+  under data/), so it must be served over HTTP, not opened directly via
+  file:// -- browsers block fetch() of same-directory files from file://
+  pages. Serve it locally with:
+
+      cd docs && python3 -m http.server 8000
+
+  then open http://localhost:8000/. Any other static host (including GitHub
+  Pages) works unchanged.
+-->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+<h1>Sentence-Probability Result Explorer</h1>
+<p id="outputs-dir-line"></p>
+<p id="loading-status" class="status-line" style="display:none;">Loading data…</p>
+<div id="data-error" class="error-banner" style="display:none;"></div>
+<div id="warnings"></div>
+<details id="chunk-debug" class="chunk-debug">
+  <summary>Loaded data chunks (debug)</summary>
+  <ul id="chunk-debug-list"></ul>
+</details>
+
+<details id="metrics-explanation">
+<summary>Metric explanations</summary>
+<div class="metrics-explanation-body">
+
+<h3>What the metrics mean</h3>
+
+<p><strong>Token-wise log probability difference</strong><br>
+<code>mean log P(positive tokens) - mean log P(negative tokens)</code>.
+Positive values indicate higher model probability for the positive sentence.</p>
+
+<p><strong>SLOR (Syntactic Log-Odds Ratio)</strong></p>
+<pre>SLOR(sentence) = (LM sentence logprob - unigram sentence logprob) / number of scored tokens</pre>
+<p>The unigram background distribution is estimated empirically from FLORES sentences using the
+<em>same tokenizer</em> as the model being scored (not an average of the model's own next-token
+distributions). Then:</p>
+<pre>SLOR difference = SLOR(positive) - SLOR(negative)</pre>
+
+<p><strong>Different-token metric</strong> (<code>only_diff_tokens_tokenwise_log_prob_diff</code>)</p>
+<p>Example:</p>
+<pre>Positive: I broke my arm .
+Negative: I broke the arm .</pre>
+<p>The aligned different subset is approximately <code>positive: my</code> / <code>negative: the</code>. Then:</p>
+<pre>only_diff_tokens_tokenwise_log_prob_diff
+    = mean logprob(positive different tokens) - mean logprob(negative different tokens)</pre>
+
+<p><strong>After-difference overlapping-token metric</strong> (<code>after_diff_tokens_tokenwise_log_prob_diff</code>)</p>
+<p>Using a similar example:</p>
+<pre>Positive: I broke my arm yesterday .
+Negative: I broke the arm yesterday .</pre>
+<p>After the difference <code>my</code> vs <code>the</code>, the later aligned <em>equal</em> tokens
+<code>arm</code>, <code>yesterday</code>, <code>.</code> belong to the after-difference subset (this is
+<strong>not</strong> every token after the first different position -- only later equal aligned spans):</p>
+<pre>after_diff_tokens_tokenwise_log_prob_diff
+    = mean logprob(positive equal tokens after first difference)
+      - mean logprob(negative equal tokens after first difference)</pre>
+
+<p><strong>GPT pairwise signed choice confidence</strong> (<code>gpt_signed_choice_confidence</code>)</p>
+<p>GPT is asked to choose sentence A or B twice, with the presentation order reversed the second
+time. The chosen output-label ("A"/"B") token logprob is <em>not</em> sentence probability -- this
+metric converts it to a confidence value (probability of the chosen label) and signs it by which
+original sentence (positive/negative) was chosen. If both orderings agree on which original
+sentence won, the point is plotted above zero for positive agreement and below zero for negative
+agreement, with magnitude equal to the mean chosen-label confidence. Order disagreement has an
+undefined signed y-value and is not plotted (but remains inspectable in the detail panel). This
+metric is never combined numerically with the local-LM/SLOR metrics above.</p>
+
+</div>
+</details>
+
+<div class="controls">
+  <div class="control">
+    <label for="metric-select">Metric / view</label>
+    <select id="metric-select"></select>
+  </div>
+  <div class="control">
+    <label>X-axis</label>
+    <label class="inline-radio"><input type="radio" name="xaxis-mode" value="condition" checked> Condition comparison</label>
+    <label class="inline-radio"><input type="radio" name="xaxis-mode" value="model"> Model comparison</label>
+    <label class="inline-radio"><input type="radio" name="xaxis-mode" value="language"> Language comparison</label>
+  </div>
+  <div class="control" id="comparison-lang-control">
+    <label for="comparison-lang-select">Comparison language</label>
+    <select id="comparison-lang-select"></select>
+    <p class="control-hint">Left = &lt;lang&gt; vs en, right = en vs &lt;lang&gt;.</p>
+  </div>
+  <div class="control">
+    <label for="model-filter">Models</label>
+    <select id="model-filter" multiple size="4"></select>
+  </div>
+  <div class="control">
+    <label for="pos-strategy-filter">Positive strategy</label>
+    <select id="pos-strategy-filter" multiple size="4"></select>
+  </div>
+  <div class="control">
+    <label for="neg-strategy-filter">Negative strategy</label>
+    <select id="neg-strategy-filter" multiple size="4"></select>
+  </div>
+  <div class="control" id="condition-filter-control">
+    <label for="condition-filter">Condition (no selection = no restriction)</label>
+    <select id="condition-filter" multiple size="4"></select>
+  </div>
+  <div class="control">
+    <label class="inline-radio"><input type="checkbox" id="include-identical"> Include identical positive/negative sentence pairs</label>
+  </div>
+  <div class="control control-wide">
+    <label id="left-gloss-tag-label" for="left-gloss-tag-filter">Interlinear-gloss tags (highlight; all selected tags must be present -- options depend on the current comparison)</label>
+    <select id="left-gloss-tag-filter" multiple size="4"></select>
+    <div class="gloss-tag-mode">
+      <label class="inline-radio"><input type="radio" name="left-gloss-tag-mode" value="Positive"> Positive</label>
+      <label class="inline-radio"><input type="radio" name="left-gloss-tag-mode" value="Negative"> Negative</label>
+      <label class="inline-radio"><input type="radio" name="left-gloss-tag-mode" value="Both" checked> Both</label>
+    </div>
+  </div>
+  <div class="control control-wide">
+    <label id="right-gloss-tag-label" for="right-gloss-tag-filter">Interlinear-gloss tags (highlight; all selected tags must be present -- options depend on the current comparison)</label>
+    <select id="right-gloss-tag-filter" multiple size="4"></select>
+    <div class="gloss-tag-mode">
+      <label class="inline-radio"><input type="radio" name="right-gloss-tag-mode" value="Positive"> Positive</label>
+      <label class="inline-radio"><input type="radio" name="right-gloss-tag-mode" value="Negative"> Negative</label>
+      <label class="inline-radio"><input type="radio" name="right-gloss-tag-mode" value="Both" checked> Both</label>
+    </div>
+  </div>
+  <div class="control control-wide">
+    <label for="highlight-fields-select">Click-to-highlight grouping (applies when metric is Token-wise / SLOR log probability difference; a clicked point highlights all currently plotted points matching on every selected field)</label>
+    <select id="highlight-fields-select" multiple size="3">
+      <option value="English baseline" selected>English baseline</option>
+      <option value="Subject/Undergoer Person+Number">Subject/Undergoer Person+Number</option>
+      <option value="Time">Time</option>
+    </select>
+  </div>
+</div>
+
+<div class="paired-graphs">
+  <div class="graph-col">
+    <h3 id="left-graph-title">Left</h3>
+    <div id="left-graph" class="graph"></div>
+  </div>
+  <div class="graph-col">
+    <h3 id="right-graph-title">Right</h3>
+    <div id="right-graph" class="graph"></div>
+  </div>
+</div>
+
+<div class="detail-section">
+  <h3>Point / pair detail</h3>
+  <div id="detail-panel"><p>Click a point in either plot to see details here.</p></div>
+  <div id="surprisal-control">
+    <label class="inline-radio"><input type="checkbox" id="show-surprisal-toggle"> Look at surprisal</label>
+    <div id="surprisal-graph-container" style="display:none;">
+      <div id="surprisal-graph" class="graph graph-small"></div>
+    </div>
+  </div>
+</div>
+
+<div class="detail-section">
+  <h3>Matching examples</h3>
+  <div class="control-row">
+    <div class="control">
+      <label for="threshold-lower">Lower bound (y &gt;= )</label>
+      <input type="number" id="threshold-lower" step="any" placeholder="open">
+      <label for="threshold-upper">Upper bound (y &lt;= )</label>
+      <input type="number" id="threshold-upper" step="any" value="0">
+    </div>
+    <div class="control control-wide">
+      <label for="stats-fields-select">Statistics grouping (percentage of the group with y in the range above)</label>
+      <select id="stats-fields-select" multiple size="3">
+        <option value="English baseline" selected>English baseline</option>
+        <option value="Subject/Undergoer Person+Number">Subject/Undergoer Person+Number</option>
+        <option value="Time">Time</option>
+      </select>
+    </div>
+    <div class="control">
+      <label for="stats-threshold-input">Highlight statistics at or above threshold (%)</label>
+      <input type="number" id="stats-threshold-input" step="any" min="0" max="100" value="80">
+    </div>
+  </div>
+
+  <div class="example-section">
+    <h4 id="left-examples-title">Matching examples: left</h4>
+    <div class="control-row control-row-tight">
+      <div class="control">
+        <label for="left-sort-field">Sort by</label>
+        <select id="left-sort-field">
+          <option value="yValue" selected>y-value</option>
+          <option value="category">category</option>
+          <option value="statistic">statistics</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="left-sort-dir">Direction</label>
+        <select id="left-sort-dir">
+          <option value="asc" selected>ascending</option>
+          <option value="desc">descending</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="left-category-filter">Category filter</label>
+        <select id="left-category-filter">
+          <option value="">All</option>
+        </select>
+      </div>
+    </div>
+    <div id="left-example-list-container" class="scrollable-table"></div>
+    <div id="left-stats-detail" class="stats-detail" style="display:none;"></div>
+  </div>
+
+  <div class="example-section">
+    <h4 id="right-examples-title">Matching examples: right</h4>
+    <div class="control-row control-row-tight">
+      <div class="control">
+        <label for="right-sort-field">Sort by</label>
+        <select id="right-sort-field">
+          <option value="yValue" selected>y-value</option>
+          <option value="category">category</option>
+          <option value="statistic">statistics</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="right-sort-dir">Direction</label>
+        <select id="right-sort-dir">
+          <option value="asc" selected>ascending</option>
+          <option value="desc">descending</option>
+        </select>
+      </div>
+      <div class="control">
+        <label for="right-category-filter">Category filter</label>
+        <select id="right-category-filter">
+          <option value="">All</option>
+        </select>
+      </div>
+    </div>
+    <div id="right-example-list-container" class="scrollable-table"></div>
+    <div id="right-stats-detail" class="stats-detail" style="display:none;"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
