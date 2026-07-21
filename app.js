@@ -52,8 +52,8 @@
     requestSeq: 0,
   };
 
-  let gptRestrictionActive = false;
-  let xaxisModeBeforeGptForce = null;
+  let pairwiseRestrictionActive = false;
+  let xaxisModeBeforePairwiseForce = null;
 
   const graphInitialized = { left: false, right: false };
   let surprisalGraphInitialized = false;
@@ -133,7 +133,7 @@
     const manifest = store.manifest;
     if (!manifest) return [];
 
-    const family = state.metric === manifest.gpt_metric ? "gpt_pairwise" : "local";
+    const family = state.metric === manifest.pairwise_metric ? "gpt_pairwise" : "local";
     const modelSet = state.models.length ? new Set(state.models) : null;
     const conditionSet = state.conditions.length ? new Set(state.conditions) : null;
 
@@ -261,6 +261,7 @@
         right: rightGlossModeEl ? rightGlossModeEl.value : "Both",
       },
       highlightFields: selectedValues(el("highlight-fields-select")),
+      averageFields: selectedValues(el("average-fields-select")),
       statsFields: selectedValues(el("stats-fields-select")),
       statsThreshold: parseNumberOrNull(el("stats-threshold-input").value),
       thresholdLower: parseNumberOrNull(el("threshold-lower").value),
@@ -333,6 +334,7 @@
     ].forEach((id) => el(id).addEventListener("change", () => { closeAllStatsDetails(); refreshAll(); }));
 
     el("highlight-fields-select").addEventListener("change", () => renderGraphs());
+    el("average-fields-select").addEventListener("change", () => { closeAllStatsDetails(); refreshAll(); });
 
     el("threshold-lower").addEventListener("input", () => { closeAllStatsDetails(); renderExamples(); });
     el("threshold-upper").addEventListener("input", () => { closeAllStatsDetails(); renderExamples(); });
@@ -373,39 +375,40 @@
   }
 
   // ---------------------------------------------------------------------
-  // GPT pairwise view restriction (CLAUDE.md section 5): GPT rows only
-  // support the language-comparison x-axis mode and their own metric.
+  // Pairwise view restriction (CLAUDE.md section 5): rows carrying only the
+  // pairwise metric (no per-condition variation, e.g. the OpenAI backend)
+  // only support the language-comparison x-axis mode and their own metric.
   // ---------------------------------------------------------------------
 
   function applyMetricRestrictions() {
     const manifest = store.manifest;
-    const isGpt = manifest && el("metric-select").value === manifest.gpt_metric;
+    const isPairwise = manifest && el("metric-select").value === manifest.pairwise_metric;
 
     const conditionRadio = document.querySelector('input[name="xaxis-mode"][value="condition"]');
     const modelRadio = document.querySelector('input[name="xaxis-mode"][value="model"]');
     const languageRadio = document.querySelector('input[name="xaxis-mode"][value="language"]');
 
-    conditionRadio.disabled = isGpt;
-    modelRadio.disabled = isGpt;
-    el("condition-filter-control").style.display = isGpt ? "none" : "";
-    el("surprisal-control").style.display = isGpt ? "none" : "";
+    conditionRadio.disabled = isPairwise;
+    modelRadio.disabled = isPairwise;
+    el("condition-filter-control").style.display = isPairwise ? "none" : "";
+    el("surprisal-control").style.display = isPairwise ? "none" : "";
 
-    if (isGpt && !gptRestrictionActive) {
+    if (isPairwise && !pairwiseRestrictionActive) {
       const current = document.querySelector('input[name="xaxis-mode"]:checked');
-      xaxisModeBeforeGptForce = current ? current.value : "condition";
+      xaxisModeBeforePairwiseForce = current ? current.value : "condition";
       languageRadio.checked = true;
-      // A local-condition selection can never match a GPT row's
+      // A local-condition selection can never match a pairwise row's
       // _condition_label ("Pairwise"), so it must be cleared here -- left in
-      // place it would silently filter every GPT row out of the view.
+      // place it would silently filter every pairwise row out of the view.
       Array.from(el("condition-filter").options).forEach((o) => { o.selected = false; });
-      gptRestrictionActive = true;
-    } else if (!isGpt && gptRestrictionActive) {
-      if (xaxisModeBeforeGptForce) {
-        const prev = document.querySelector(`input[name="xaxis-mode"][value="${xaxisModeBeforeGptForce}"]`);
+      pairwiseRestrictionActive = true;
+    } else if (!isPairwise && pairwiseRestrictionActive) {
+      if (xaxisModeBeforePairwiseForce) {
+        const prev = document.querySelector(`input[name="xaxis-mode"][value="${xaxisModeBeforePairwiseForce}"]`);
         if (prev) prev.checked = true;
       }
-      gptRestrictionActive = false;
-      xaxisModeBeforeGptForce = null;
+      pairwiseRestrictionActive = false;
+      xaxisModeBeforePairwiseForce = null;
     }
 
     const activeXaxis = document.querySelector('input[name="xaxis-mode"]:checked');
@@ -553,7 +556,15 @@
   // combined > related > gloss > ordinary.
   // ---------------------------------------------------------------------
 
-  function computeStyle(row, ctx) {
+  // Bright, maximally-contrasting fill colors for the click-to-highlight
+  // group, distinct from every ordinary trace color (blue scatter points,
+  // red/blue diff-token markers) and from each other, so the highlighted
+  // group is unmistakable at a glance rather than only a thin outline change.
+  const RELATED_HIGHLIGHT_COLOR = "rgb(255,0,0)"; // bright red
+  const RELATED_GLOSS_HIGHLIGHT_COLOR = "rgb(255,0,170)"; // bright magenta
+  const EXACT_HIGHLIGHT_COLOR = "rgb(255,215,0)"; // gold
+
+  function computeStyle(row, ctx, baseColor) {
     const isExact = ctx.selectedPairId !== null && row._pair_id === ctx.selectedPairId;
     const isGloss = rowMatchesGloss(row, ctx.glossTags, ctx.glossMode);
     const isRelated = ctx.relatedEnabled && rowsMatchOnFields(row, ctx.selectedRow, ctx.highlightFields);
@@ -562,73 +573,70 @@
     let opacity = 0.55;
     let lineWidth = 0;
     let lineColor = "rgba(0,0,0,0)";
+    let color = baseColor;
 
-    if (isRelated && isGloss) {
-      size = 11;
-      opacity = 0.95;
-      lineWidth = 2.5;
-      lineColor = "rgb(148,0,211)";
-    } else if (isRelated) {
-      size = 10;
-      opacity = 0.9;
-      lineWidth = 2;
-      lineColor = "rgb(0,120,255)";
-    } else if (isGloss) {
+    if (isGloss) {
       size = 9;
       opacity = 0.85;
       lineWidth = 1.5;
       lineColor = "rgb(255,140,0)";
     }
 
+    if (isRelated) {
+      // The clicked point's matching group: swap the fill to a bright color
+      // (never just a subtle outline) so it stands out immediately against
+      // the ordinary points, even before considering size/outline.
+      color = isGloss ? RELATED_GLOSS_HIGHLIGHT_COLOR : RELATED_HIGHLIGHT_COLOR;
+      size = 12;
+      opacity = 1;
+      lineWidth = 2;
+      lineColor = "black";
+    }
+
     if (isExact) {
-      size = Math.max(size, 14);
+      // The exact clicked point stands out even from the rest of its
+      // highlighted group.
+      color = EXACT_HIGHLIGHT_COLOR;
+      size = Math.max(size, 15);
       opacity = 1;
       lineWidth = 3.5;
-      lineColor = "rgb(220,20,60)";
+      lineColor = "black";
     }
 
-    return { size, opacity, lineWidth, lineColor };
+    return { size, opacity, lineWidth, lineColor, color };
   }
 
   // ---------------------------------------------------------------------
-  // Model-name-clipping fix: wrap long labels at path/word boundaries and
-  // rotate them; works for any model name, not a hardcoded list.
+  // X-axis label visibility (CLAUDE.md section 1): model and condition
+  // labels are shown diagonally, in full (never abbreviated/wrapped), with
+  // enough bottom margin -- scaled to the longest label for model names,
+  // since Hugging Face model identifiers vary widely in length.
   // ---------------------------------------------------------------------
 
-  function wrapLabel(label, maxLineLen) {
-    maxLineLen = maxLineLen || 16;
-    const str = String(label);
-    if (str.length <= maxLineLen) return str;
-    const breakChars = /[/\-_]/;
-    const lines = [];
-    let current = "";
-    let lastBreakIdx = -1;
-    for (let i = 0; i < str.length; i++) {
-      current += str[i];
-      if (breakChars.test(str[i])) lastBreakIdx = current.length;
-      if (current.length >= maxLineLen) {
-        if (lastBreakIdx > 0) {
-          lines.push(current.slice(0, lastBreakIdx));
-          current = current.slice(lastBreakIdx);
-          lastBreakIdx = -1;
-        } else {
-          lines.push(current);
-          current = "";
-        }
-      }
-    }
-    if (current) lines.push(current);
-    return lines.join("<br>");
-  }
+  function getXAxisDisplaySettings(xAxisMode, labels) {
+    const longestLabelLength = Math.max(0, ...labels.map((label) => String(label).length));
 
-  function computeBottomMargin(xaxisMode, presentCategories) {
-    if (xaxisMode !== "model") return 50;
-    let maxLines = 1;
-    presentCategories.forEach((c) => {
-      const lines = wrapLabel(c, 16).split("<br>").length;
-      if (lines > maxLines) maxLines = lines;
-    });
-    return 55 + maxLines * 15;
+    if (xAxisMode === "model") {
+      return {
+        tickangle: -35,
+        automargin: true,
+        bottomMargin: Math.max(130, Math.min(260, 70 + longestLabelLength * 2.5)),
+      };
+    }
+
+    if (xAxisMode === "condition") {
+      return {
+        tickangle: -35,
+        automargin: true,
+        bottomMargin: 120,
+      };
+    }
+
+    return {
+      tickangle: 0,
+      automargin: true,
+      bottomMargin: 80,
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -640,34 +648,70 @@
   }
 
   function baseLayout(yTitle, xaxisMode, presentCategories) {
-    const isModelMode = xaxisMode === "model";
-    const tickText = presentCategories.map((c) => (isModelMode ? wrapLabel(c, 16) : c));
+    const settings = getXAxisDisplaySettings(xaxisMode, presentCategories);
     return {
       yaxis: { title: yTitle },
       xaxis: {
         title: xaxisMode === "model" ? "Model" : xaxisMode === "language" ? "Language" : "Condition",
         tickmode: "array",
         tickvals: presentCategories.map((_, i) => i),
-        ticktext: tickText,
-        tickangle: isModelMode ? -30 : 0,
-        automargin: true,
+        ticktext: presentCategories.map((c) => String(c)),
+        tickangle: settings.tickangle,
+        automargin: settings.automargin,
       },
       shapes: [zeroLineShape()],
-      legend: { orientation: "h" },
-      margin: { t: 30, b: computeBottomMargin(xaxisMode, presentCategories) },
+      legend: { orientation: "h", x: 1, y: 1, xanchor: "right", yanchor: "top" },
+      margin: { t: 30, b: settings.bottomMargin },
       uirevision: "main-graph",
     };
   }
 
-  function pointCustomdata(r) {
-    return [
-      r.prompt || "",
-      r.positive_sentence || "",
-      r.negative_sentence || "",
-      r._pair_id,
-      r.model_name || "",
-      r["English baseline"] || "",
-    ];
+  // ---------------------------------------------------------------------
+  // Hover text (CLAUDE.md section 6): a raw pairwise point shows both
+  // vote-level (AB/BA) confidence values plus the final signed confidence;
+  // every other metric keeps the existing prompt/sentence hover. Built as a
+  // single preformatted string per point (rather than juggling several
+  // possibly-missing customdata fields with Plotly's own number formatting),
+  // since legacy result files may be missing the individual per-vote
+  // confidence fields entirely (CLAUDE.md 2.2) and must show clearly as such
+  // rather than as a formatting error.
+  // ---------------------------------------------------------------------
+
+  function fmtNum(v) {
+    return typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : "n/a";
+  }
+
+  function fmtSigned(v) {
+    if (typeof v !== "number" || !Number.isFinite(v)) return "n/a";
+    return (v >= 0 ? "+" : "") + v.toFixed(4);
+  }
+
+  function isPairwiseMetric(metric) {
+    return metric === store.manifest.pairwise_metric;
+  }
+
+  function buildHoverText(row, metricCol, metricLabel) {
+    const lines = [`model: ${orEmpty(row.model_name)}`, `English baseline: ${orEmpty(row["English baseline"])}`];
+
+    if (isPairwiseMetric(metricCol)) {
+      lines.push(
+        `AB output: ${orEmpty(row.pairwise_ab_raw_output)}`,
+        `AB original choice: ${orEmpty(row.pairwise_ab_original_chosen_label)}`,
+        `AB confidence: ${fmtNum(row.pairwise_ab_confidence)}`,
+        `AB signed confidence: ${fmtSigned(row.pairwise_ab_signed_confidence)}`,
+        `BA output: ${orEmpty(row.pairwise_ba_raw_output)}`,
+        `BA original choice: ${orEmpty(row.pairwise_ba_original_chosen_label)}`,
+        `BA confidence: ${fmtNum(row.pairwise_ba_confidence)}`,
+        `BA signed confidence: ${fmtSigned(row.pairwise_ba_signed_confidence)}`,
+        `Final signed confidence: ${fmtSigned(row.pairwise_signed_choice_confidence)}`
+      );
+    } else {
+      lines.push(`prompt: ${orEmpty(row.prompt)}`);
+    }
+
+    lines.push(`positive_sentence: ${orEmpty(row.positive_sentence)}`, `negative_sentence: ${orEmpty(row.negative_sentence)}`);
+    lines.push(`${metricLabel || "y"}: ${fmtNum(row[metricCol])}`);
+    return lines.join("<br>");
   }
 
   function buildScatterTraces(rows, metric, xCol, categories, ctx) {
@@ -681,8 +725,9 @@
       if (!catRows.length) return;
       const ys = catRows.map((r) => r[metric]);
       const xs = ys.map(() => i + (rng() * 2 - 1) * 0.12);
-      const customdata = catRows.map(pointCustomdata);
-      const styles = catRows.map((r) => computeStyle(r, ctx));
+      const customdata = catRows.map((r) => r._pair_id);
+      const text = catRows.map((r) => buildHoverText(r, metric, null));
+      const styles = catRows.map((r) => computeStyle(r, ctx, "rgb(31,119,180)"));
 
       traces.push({
         x: xs,
@@ -693,14 +738,14 @@
         legendgroup: "points",
         showlegend: i === 0,
         marker: {
-          color: "rgb(31,119,180)",
+          color: styles.map((s) => s.color),
           size: styles.map((s) => s.size),
           opacity: styles.map((s) => s.opacity),
           line: { width: styles.map((s) => s.lineWidth), color: styles.map((s) => s.lineColor) },
         },
         customdata,
-        hovertemplate:
-          "model: %{customdata[4]}<br>English baseline: %{customdata[5]}<br>prompt: %{customdata[0]}<br>positive_sentence: %{customdata[1]}<br>negative_sentence: %{customdata[2]}<br>y: %{y:.4f}<extra></extra>",
+        text,
+        hovertemplate: "%{text}<extra></extra>",
       });
 
       const med = median(ys);
@@ -747,8 +792,9 @@
         if (!catRows.length) return;
         const ys = catRows.map((r) => r[spec.column]);
         const xs = ys.map(() => i + offset + (rng() * 2 - 1) * 0.05);
-        const customdata = catRows.map(pointCustomdata);
-        const styles = catRows.map((r) => computeStyle(r, ctx));
+        const customdata = catRows.map((r) => r._pair_id);
+        const text = catRows.map((r) => buildHoverText(r, spec.column, `${spec.label} logprob diff`));
+        const styles = catRows.map((r) => computeStyle(r, ctx, spec.color));
 
         traces.push({
           x: xs,
@@ -759,14 +805,15 @@
           legendgroup: spec.label,
           showlegend: i === 0,
           marker: {
-            color: spec.color,
+            color: styles.map((s) => s.color),
             size: styles.map((s) => Math.max(s.size, 6)),
             symbol: spec.symbol,
             opacity: styles.map((s) => s.opacity),
             line: { width: styles.map((s) => s.lineWidth), color: styles.map((s) => s.lineColor) },
           },
           customdata,
-          hovertemplate: `${spec.label} logprob diff: %{y:.4f}<br>model: %{customdata[4]}<br>English baseline: %{customdata[5]}<br>positive_sentence: %{customdata[1]}<br>negative_sentence: %{customdata[2]}<extra></extra>`,
+          text,
+          hovertemplate: "%{text}<extra></extra>",
         });
 
         const med = median(ys);
@@ -799,11 +846,210 @@
     return { traces, presentCategories };
   }
 
+  // ---------------------------------------------------------------------
+  // Average plots (CLAUDE.md section 8): grouped by the active x-axis
+  // category plus the selected averaging dimensions, arithmetic mean,
+  // non-finite values ignored, never averaged across different x-axis
+  // categories. Replaces the raw per-row plot entirely when one or more
+  // dimensions are selected -- it does not overlay it.
+  // ---------------------------------------------------------------------
+
+  function isFiniteNumber(v) {
+    return typeof v === "number" && Number.isFinite(v);
+  }
+
+  function groupRowsForAveraging(rows, xCol, categories, metricCol, groupingFields) {
+    const byCategory = new Map();
+    categories.forEach((c) => byCategory.set(c, new Map()));
+
+    rows.forEach((r) => {
+      const cat = r[xCol];
+      const catGroups = byCategory.get(cat);
+      if (!catGroups) return;
+      const y = r[metricCol];
+      if (!isFiniteNumber(y)) return; // non-finite metric values are ignored
+
+      const keyParts = [];
+      for (const f of groupingFields) {
+        const v = r[f];
+        if (v === null || v === undefined || v === "") return; // row can't be grouped -- excluded
+        keyParts.push(String(v));
+      }
+      const key = keyParts.join("||");
+
+      if (!catGroups.has(key)) {
+        catGroups.set(key, { groupValues: Object.fromEntries(groupingFields.map((f) => [f, r[f]])), values: [], rows: [] });
+      }
+      const g = catGroups.get(key);
+      g.values.push(y);
+      g.rows.push(r);
+    });
+
+    return byCategory;
+  }
+
+  function meanOfField(rows, field) {
+    const values = rows.map((r) => r[field]).filter(isFiniteNumber);
+    return values.length ? mean(values) : null;
+  }
+
+  function buildAveragedPointsForMetric(rows, metricCol, xCol, categories, groupingFields, includePairwiseSummary) {
+    const grouped = groupRowsForAveraging(rows, xCol, categories, metricCol, groupingFields);
+    const presentCategories = categories.filter((c) => grouped.get(c) && grouped.get(c).size > 0);
+
+    const xs = [];
+    const ys = [];
+    const texts = [];
+
+    presentCategories.forEach((cat, i) => {
+      const groups = Array.from(grouped.get(cat).values());
+      groups.forEach((g, gi) => {
+        const groupMean = mean(g.values);
+        const offset = groups.length > 1 ? (gi - (groups.length - 1) / 2) * 0.18 : 0;
+        xs.push(i + offset);
+        ys.push(groupMean);
+
+        const lines = groupingFields.map((f) => `${f}: ${orEmpty(g.groupValues[f])}`);
+        lines.push(`Mean: ${groupMean.toFixed(4)}`);
+        lines.push(`Number of examples: ${g.values.length}`);
+        if (includePairwiseSummary) {
+          lines.push(
+            `Mean AB confidence: ${fmtNum(meanOfField(g.rows, "pairwise_ab_confidence"))}`,
+            `Mean AB signed confidence: ${fmtSigned(meanOfField(g.rows, "pairwise_ab_signed_confidence"))}`,
+            `Mean BA confidence: ${fmtNum(meanOfField(g.rows, "pairwise_ba_confidence"))}`,
+            `Mean BA signed confidence: ${fmtSigned(meanOfField(g.rows, "pairwise_ba_signed_confidence"))}`
+          );
+        }
+        texts.push(lines.join("<br>"));
+      });
+    });
+
+    return { xs, ys, texts, presentCategories };
+  }
+
+  function averagedTrace(name, color, points) {
+    return {
+      x: points.xs,
+      y: points.ys,
+      mode: "markers",
+      type: "scatter",
+      name,
+      marker: { color, size: 13, symbol: "diamond", line: { color: "black", width: 1.5 } },
+      text: points.texts,
+      hovertemplate: "%{text}<extra></extra>",
+      // Averaged points are aggregates, never individually selectable --
+      // customdata is intentionally omitted so onGraphClick treats them like
+      // the existing mean/median overlay markers.
+    };
+  }
+
+  function buildAveragedTraces(rows, metric, xCol, categories, groupingFields) {
+    const points = buildAveragedPointsForMetric(rows, metric, xCol, categories, groupingFields, isPairwiseMetric(metric));
+    return { traces: [averagedTrace("averaged", "rgb(255,127,14)", points)], presentCategories: points.presentCategories };
+  }
+
+  function buildAveragedDiffTraces(rows, xCol, categories, groupingFields) {
+    const traces = [];
+    const entries = Object.values(store.manifest.diff_metric_columns);
+    const categorySet = new Set();
+    const offsets = [-0.15, 0.15];
+
+    entries.forEach((spec, mIdx) => {
+      const points = buildAveragedPointsForMetric(rows, spec.column, xCol, categories, groupingFields, false);
+      points.presentCategories.forEach((c) => categorySet.add(c));
+      const offsetPoints = { ...points, xs: points.xs.map((x) => x + offsets[mIdx]) };
+      traces.push(averagedTrace(`${spec.label} averaged`, spec.color, offsetPoints));
+    });
+
+    return { traces, presentCategories: categories.filter((c) => categorySet.has(c)) };
+  }
+
+  // ---------------------------------------------------------------------
+  // Win rate (CLAUDE.md section 7): wins / (wins + losses), exact zero and
+  // non-finite values excluded from both. Computed from whichever values are
+  // actually displayed -- raw per-row values normally, or the averaged
+  // group means when averaging is active -- so it never implies a
+  // denominator larger than what the plot actually shows.
+  // ---------------------------------------------------------------------
+
+  function computeWinRateStats(ys) {
+    let wins = 0;
+    let losses = 0;
+    ys.forEach((y) => {
+      if (!isFiniteNumber(y) || y === 0) return;
+      if (y > 0) wins += 1;
+      else losses += 1;
+    });
+    const denom = wins + losses;
+    return { wins, losses, denom, rate: denom > 0 ? wins / denom : null };
+  }
+
+  function displayedValuesByCategory(rows, metricCol, xCol, categories, groupingFields) {
+    const byCategory = new Map();
+    categories.forEach((c) => byCategory.set(c, []));
+
+    if (!groupingFields.length) {
+      rows.forEach((r) => {
+        const bucket = byCategory.get(r[xCol]);
+        if (!bucket) return;
+        const y = r[metricCol];
+        if (isFiniteNumber(y)) bucket.push(y);
+      });
+      return byCategory;
+    }
+
+    const grouped = groupRowsForAveraging(rows, xCol, categories, metricCol, groupingFields);
+    categories.forEach((cat) => {
+      const groups = grouped.get(cat);
+      if (!groups) return;
+      groups.forEach((g) => byCategory.get(cat).push(mean(g.values)));
+    });
+    return byCategory;
+  }
+
+  function renderWinRates(side, state, rows, xCol, categories) {
+    const container = el(`${side}-winrate`);
+    if (!container) return;
+    container.innerHTML = "";
+    if (!rows.length) return;
+
+    const metricSpecs =
+      state.metric === "diff_comparison"
+        ? Object.values(store.manifest.diff_metric_columns).map((spec) => [spec.column, spec.label])
+        : [[state.metric, null]];
+
+    metricSpecs.forEach(([metricCol, label]) => {
+      const byCategory = displayedValuesByCategory(rows, metricCol, xCol, categories, state.averageFields);
+      const anyData = categories.some((cat) => (byCategory.get(cat) || []).length > 0);
+      if (!anyData) return;
+
+      const row = document.createElement("div");
+      row.className = "winrate-row";
+
+      const heading = document.createElement("span");
+      heading.className = "winrate-heading";
+      heading.textContent = label ? `${label} win rate:` : "Win rate:";
+      row.appendChild(heading);
+
+      categories.forEach((cat) => {
+        const stats = computeWinRateStats(byCategory.get(cat) || []);
+        if (stats.denom === 0) return;
+        const item = document.createElement("span");
+        item.className = "winrate-item";
+        item.textContent = `${cat}: ${(stats.rate * 100).toFixed(1)}% (${stats.wins}/${stats.denom})`;
+        row.appendChild(item);
+      });
+
+      container.appendChild(row);
+    });
+  }
+
   function renderSideGraph(side, state, baseFiltered) {
     const rows = sideRows(baseFiltered, state, side);
     const xCol = xColForSide(state, side);
     const categories = computeCategories(state);
     const relatedEnabled = RELATED_CLICK_METRICS.has(state.metric);
+    const isAveraging = state.averageFields.length > 0;
     const ctx = {
       selectedPairId: store.selectedPairId,
       selectedRow: store.selectedRow,
@@ -815,10 +1061,14 @@
 
     let traces, presentCategories, yTitle;
     if (state.metric === "diff_comparison") {
-      ({ traces, presentCategories } = buildDiffTraces(rows, xCol, categories, ctx));
+      ({ traces, presentCategories } = isAveraging
+        ? buildAveragedDiffTraces(rows, xCol, categories, state.averageFields)
+        : buildDiffTraces(rows, xCol, categories, ctx));
       yTitle = store.manifest.metric_y_labels.diff_comparison;
     } else {
-      ({ traces, presentCategories } = buildScatterTraces(rows, state.metric, xCol, categories, ctx));
+      ({ traces, presentCategories } = isAveraging
+        ? buildAveragedTraces(rows, state.metric, xCol, categories, state.averageFields)
+        : buildScatterTraces(rows, state.metric, xCol, categories, ctx));
       yTitle = store.manifest.metric_y_labels[state.metric] || state.metric;
     }
 
@@ -834,17 +1084,17 @@
     }
 
     el(`${side}-graph-title`).textContent = sideTitle(state, side);
+    renderWinRates(side, state, rows, xCol, categories);
     return rows;
   }
 
   function onGraphClick(eventData) {
     if (!eventData || !eventData.points || !eventData.points.length) return;
     const point = eventData.points[0];
-    const customdata = point.customdata;
-    // Mean/median traces carry no customdata, so clicking them is a no-op:
-    // only actual data-point traces are selectable.
-    if (!customdata) return;
-    const pairId = customdata[3];
+    const pairId = point.customdata;
+    // Mean/median/averaged traces carry no customdata, so clicking them is a
+    // no-op: only actual data-point traces are selectable.
+    if (pairId === null || pairId === undefined) return;
     store.selectedPairId = pairId;
     store.selectedRow = store.rowsById.get(pairId) || null;
     renderDetailPanel(store.selectedPairId);
@@ -908,13 +1158,23 @@
     appendField(container, "Positive Interlinear gloss", row.positive_Interlinear_gloss);
     appendField(container, "Negative Interlinear gloss", row.negative_Interlinear_gloss);
 
-    if (row.gpt_pairwise_winner !== null && row.gpt_pairwise_winner !== undefined) {
+    if (row.pairwise_winner !== null && row.pairwise_winner !== undefined) {
+      // Same fields as the raw-point hover tooltip (CLAUDE.md section 6).
+      // Legacy result files may be missing the individual per-vote
+      // confidence/signed-confidence fields entirely (CLAUDE.md 2.2) --
+      // appendField already omits any field whose value is null/undefined,
+      // so those simply do not appear rather than showing a fabricated value.
       container.appendChild(document.createElement("hr"));
-      appendField(container, "GPT AB chosen (original identity)", row.gpt_ab_original_chosen_label);
-      appendField(container, "GPT AB chosen logprob", row.gpt_ab_chosen_logprob);
-      appendField(container, "GPT BA chosen (original identity)", row.gpt_ba_original_chosen_label);
-      appendField(container, "GPT BA chosen logprob", row.gpt_ba_chosen_logprob);
-      appendField(container, "GPT pairwise winner", row.gpt_pairwise_winner);
+      appendField(container, "AB output", row.pairwise_ab_raw_output);
+      appendField(container, "AB original choice", row.pairwise_ab_original_chosen_label);
+      appendField(container, "AB confidence", row.pairwise_ab_confidence);
+      appendField(container, "AB signed confidence", row.pairwise_ab_signed_confidence);
+      appendField(container, "BA output", row.pairwise_ba_raw_output);
+      appendField(container, "BA original choice", row.pairwise_ba_original_chosen_label);
+      appendField(container, "BA confidence", row.pairwise_ba_confidence);
+      appendField(container, "BA signed confidence", row.pairwise_ba_signed_confidence);
+      appendField(container, "Pairwise winner", row.pairwise_winner);
+      appendField(container, "Final signed confidence", row.pairwise_signed_choice_confidence);
     }
 
     const diffFields = [

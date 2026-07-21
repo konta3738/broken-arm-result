@@ -99,6 +99,28 @@ body {
     height: 560px;
 }
 
+/* Part 7: win rates shown above the relevant plot. */
+.winrate-panel:empty {
+    display: none;
+}
+
+.winrate-row {
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+    line-height: 1.6;
+}
+
+.winrate-heading {
+    font-weight: 600;
+    margin-right: 0.5rem;
+}
+
+.winrate-item {
+    display: inline-block;
+    margin-right: 0.9rem;
+    color: #333;
+}
+
 .graph-small {
     width: 100%;
     height: 280px;

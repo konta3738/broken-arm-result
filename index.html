@@ -70,14 +70,16 @@ Negative: I broke the arm yesterday .</pre>
     = mean logprob(positive equal tokens after first difference)
       - mean logprob(negative equal tokens after first difference)</pre>
 
-<p><strong>GPT pairwise signed choice confidence</strong> (<code>gpt_signed_choice_confidence</code>)</p>
-<p>GPT is asked to choose sentence A or B twice, with the presentation order reversed the second
-time. The chosen output-label ("A"/"B") token logprob is <em>not</em> sentence probability -- this
-metric converts it to a confidence value (probability of the chosen label) and signs it by which
-original sentence (positive/negative) was chosen. If both orderings agree on which original
-sentence won, the point is plotted above zero for positive agreement and below zero for negative
-agreement, with magnitude equal to the mean chosen-label confidence. Order disagreement has an
-undefined signed y-value and is not plotted (but remains inspectable in the detail panel). This
+<p><strong>Pairwise signed choice confidence</strong> (<code>pairwise_signed_choice_confidence</code>)</p>
+<p>The model (OpenAI or a local Hugging Face model) is asked to choose sentence A or B twice, with
+the presentation order reversed the second time. The chosen output-label ("A"/"B") token logprob is
+<em>not</em> sentence probability -- this metric converts each of the two votes to a confidence value
+(probability of that vote's chosen label) and signs it by which original sentence (positive/negative)
+was chosen. The two signed vote values are always averaged into the final signed choice confidence,
+whether or not the two orderings agree -- a value near zero can mean the votes disagreed, that both
+votes were invalid, or that magnitudes happened to cancel; it is never a separately imposed
+disagreement rule. A vote whose top-1 output does not resolve to exactly A/B contributes zero rather
+than raising an error, and its raw output remains inspectable in the detail panel/hover tooltip. This
 metric is never combined numerically with the local-LM/SLOR metrics above.</p>
 
 </div>
@@ -144,15 +146,25 @@ metric is never combined numerically with the local-LM/SLOR metrics above.</p>
       <option value="Time">Time</option>
     </select>
   </div>
+  <div class="control control-wide">
+    <label for="average-fields-select">Average plots (select one or more dimensions to replace the raw plot below with points averaged by x-axis category + these dimensions; none selected = raw plot)</label>
+    <select id="average-fields-select" multiple size="3">
+      <option value="English baseline">English baseline</option>
+      <option value="Subject/Undergoer Person+Number">Subject/Undergoer Person+Number</option>
+      <option value="Time">Time</option>
+    </select>
+  </div>
 </div>
 
 <div class="paired-graphs">
   <div class="graph-col">
     <h3 id="left-graph-title">Left</h3>
+    <div id="left-winrate" class="winrate-panel"></div>
     <div id="left-graph" class="graph"></div>
   </div>
   <div class="graph-col">
     <h3 id="right-graph-title">Right</h3>
+    <div id="right-winrate" class="winrate-panel"></div>
     <div id="right-graph" class="graph"></div>
   </div>
 </div>
