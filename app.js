@@ -24,6 +24,16 @@
   const GROUPING_FIELDS = ["English baseline", "Subject/Undergoer Person+Number", "Time"];
   const RELATED_CLICK_METRICS = new Set(["token_logprob_diff", "SLOR_token_logprob_diff"]);
 
+  // Averaged-point horizontal layout within one x-axis category (CLAUDE.md
+  // "Average plots"): AVERAGED_GROUP_STEP is the per-group offset used when
+  // there are few groups (matches the raw-scatter jitter scale); the total
+  // spread is additionally capped at MAX_AVERAGED_GROUP_SPREAD so a category
+  // with many groups (e.g. many distinct "English baseline" values) never
+  // fans out wide enough to collide with neighboring categories or make it
+  // hard to tell which points share a category.
+  const AVERAGED_GROUP_STEP = 0.18;
+  const MAX_AVERAGED_GROUP_SPREAD = 0.5;
+
   // Beyond the chunks required for the *current* view (which are always
   // kept, regardless of these numbers -- correctness first), keep this many
   // additional recently-used chunks around so switching back to a previous
@@ -133,7 +143,7 @@
     const manifest = store.manifest;
     if (!manifest) return [];
 
-    const family = state.metric === manifest.pairwise_metric ? "gpt_pairwise" : "local";
+    const family = state.metric === manifest.pairwise_metric ? "pairwise" : "sentence_probability";
     const modelSet = state.models.length ? new Set(state.models) : null;
     const conditionSet = state.conditions.length ? new Set(state.conditions) : null;
 
@@ -383,6 +393,14 @@
   function applyMetricRestrictions() {
     const manifest = store.manifest;
     const isPairwise = manifest && el("metric-select").value === manifest.pairwise_metric;
+
+    // Model list is family-scoped (CLAUDE.md section 9.2): a model with only
+    // pairwise data must not appear as though it has sentence-probability
+    // results, and vice versa. Re-populated every time the metric changes.
+    const modelsForFamily = isPairwise
+      ? (manifest.filters.pairwise_models || [])
+      : (manifest.filters.models || []);
+    populateSelect(el("model-filter"), modelsForFamily, { preserveSelection: true });
 
     const conditionRadio = document.querySelector('input[name="xaxis-mode"][value="condition"]');
     const modelRadio = document.querySelector('input[name="xaxis-mode"][value="model"]');
@@ -903,9 +921,15 @@
 
     presentCategories.forEach((cat, i) => {
       const groups = Array.from(grouped.get(cat).values());
+      // Per-group step shrinks as the group count grows, so the whole
+      // category's spread stays capped at MAX_AVERAGED_GROUP_SPREAD instead
+      // of widening without bound (and colliding with neighboring
+      // categories) when there are many groups -- e.g. many distinct
+      // "English baseline" values averaged within one language/model.
+      const step = groups.length > 1 ? Math.min(AVERAGED_GROUP_STEP, MAX_AVERAGED_GROUP_SPREAD / (groups.length - 1)) : 0;
       groups.forEach((g, gi) => {
         const groupMean = mean(g.values);
-        const offset = groups.length > 1 ? (gi - (groups.length - 1) / 2) * 0.18 : 0;
+        const offset = groups.length > 1 ? (gi - (groups.length - 1) / 2) * step : 0;
         xs.push(i + offset);
         ys.push(groupMean);
 
